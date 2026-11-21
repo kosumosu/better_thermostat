@@ -245,6 +245,7 @@ With direct valve control, Better Thermostat can:
 Direct valve control is available for TRVs that expose valve position as a controllable entity, including:
 
 - **Sonoff TRVZB** (via Zigbee2MQTT or ZHA)
+- **Sonoff TRV-ZBT** (via Zigbee2MQTT or ZHA), whose valve opening is one register per running state. Better Thermostat writes the same opening to the heating and to the idle register, so the valve follows it in whichever state the device runs, and switches the device's own PID mode off at startup
 - **TRVs exposed via MQTT** with valve position entities
 - **ZHA TRVs** whose quirk exposes the valve position as a number entity. A valve position that ZHA only shows as a sensor, such as the PI heating demand of the Bosch Radiator Thermostat II, reports the opening but cannot set it
 - **Z-Wave JS TRVs** that expose a valve position entity, and the Eurotronic Spirit Z / Aeotec ZWA021
