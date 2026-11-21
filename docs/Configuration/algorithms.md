@@ -53,7 +53,7 @@ To see what each option actually sends over the radio, imagine this everyday sna
 Direct valve control is available for TRVs that expose their valve position as a writable entity, and for the models marked *built-in* below, whose valve control is part of Better Thermostat:
 
 - **Sonoff TRVZB** (via Zigbee2MQTT or ZHA), *built-in*: Better Thermostat writes the opening and closing degree the TRV exposes
-- **Sonoff TRV-ZBT** (via Zigbee2MQTT or ZHA), *built-in*: Better Thermostat writes its position into both `heating_valve_position` and `idle_valve_position`, so the valve holds it whether or not the TRV's own controller heats. ZHA shows the two as the opening and closing degree
+- **Sonoff TRV-ZBT** (via Zigbee2MQTT or ZHA), *built-in*: Better Thermostat writes its position into both `heating_valve_position` and `idle_valve_position`, so the valve holds it whether or not the TRV's own controller heats. ZHA shows the two as the opening and closing degree. On `Direct Valve Based` it also switches the device's own PID mode (`smart_temperature_control`) off at startup, since that mode keeps both numbers under the device's own algorithm
 - **Eurotronic Spirit Z / Aeotec ZWA021** (Z-Wave JS), *built-in*: Better Thermostat drives the valve through the Multilevel Switch command class
 - **Shelly BLU TRV**, once its built-in thermostat is switched off on the Shelly side and Home Assistant shows its valve position entity. Reload Better Thermostat after switching, so it finds the entity
 - **TRVs exposed via MQTT / Zigbee2MQTT** or **Z-Wave JS** with writable valve position entities (such as Eurotronic Spirit Zigbee `SPZB0001` or Danfoss/Popp/Hive TRVs)
