@@ -177,8 +177,9 @@ def _valve_number_candidates(
     the TRV is no Sonoff model or has no registry entry.
     """
     model = self.real_trvs[entity_id].model
-    # The TRV-ZBT's valve numbers configure its own controller and position
-    # nothing, so it is ruled out before the Sonoff match below takes it in.
+    # The TRV-ZBT carries one valve register per running state, and its quirk
+    # writes them all, so the single opening and closing degree a Sonoff
+    # write takes would carry half the demand.
     if _TRV_ZBT_MODEL in model.lower():
         _LOGGER.debug(
             "better_thermostat %s: TRVZB valve lookup skipped for the TRV-ZBT (model=%s)",
