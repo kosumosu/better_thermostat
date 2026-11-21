@@ -9,6 +9,7 @@ while idle; Better Thermostat writes its position into both.
 import importlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.core import State
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
@@ -33,6 +34,9 @@ HEATING_VALVE = "number.trv1_heating_valve_position"
 IDLE_VALVE = "number.trv1_idle_valve_position"
 EXTERNAL_INPUT = "number.trv1_external_temperature_input"
 SENSOR_SELECT = "select.trv1_temperature_sensor_select"
+PID_SWITCH = "switch.trv1_smart_temperature_control"
+
+DIRECT_VALVE_ADVANCED = {"calibration": "direct_valve_based"}
 
 
 def _entry(entity_id):
@@ -45,31 +49,39 @@ def _entry(entity_id):
 
 
 def _trv_zbt_entries():
-    """The TRV-ZBT's climate entity and the numbers and selector next to it."""
+    """The TRV-ZBT's climate entity and the entities next to it."""
     return [
         _entry(ENTITY),
         _entry(HEATING_VALVE),
         _entry(IDLE_VALVE),
         _entry(EXTERNAL_INPUT),
         _entry(SENSOR_SELECT),
+        _entry(PID_SWITCH),
     ]
 
 
-def _make_self(selector_state="internal"):
+def _make_self(selector_state="internal", states=None, advanced=None, entries=None):
     """A BT stand-in whose only TRV is a TRV-ZBT."""
     mock_self = ThermostatStandIn()
     mock_self.device_name = "test_thermostat"
     mock_self.context = MagicMock()
     mock_self.sensor_entity_id = "sensor.room_temperature"
     mock_self.hass.services.async_call = AsyncMock()
-    mock_self.real_trvs = {ENTITY: trv_record(entity_id=ENTITY, model="TRV-ZBT")}
-    mock_self._registry = make_entity_registry(*_trv_zbt_entries())
+    mock_self.real_trvs = {
+        ENTITY: trv_record(entity_id=ENTITY, model="TRV-ZBT", advanced=advanced or {})
+    }
+    mock_self._registry = make_entity_registry(*(entries or _trv_zbt_entries()))
 
-    mock_self.hass.states.get.return_value = State(
-        SENSOR_SELECT,
-        selector_state,
-        {"options": ["internal", "external", "external_2", "external_3"]},
-    )
+    registered = {
+        SENSOR_SELECT: State(
+            SENSOR_SELECT,
+            selector_state,
+            {"options": ["internal", "external", "external_2", "external_3"]},
+        )
+    }
+    for entity_id, value in (states or {}).items():
+        registered[entity_id] = State(entity_id, value)
+    mock_self.hass.states.get.side_effect = registered.get
     return mock_self
 
 
@@ -363,3 +375,149 @@ class TestAnIncompletePair:
         mock_self.hass.services.async_call = AsyncMock(side_effect=_refuse_idle)
 
         assert await trv_zbt.override_set_valve(mock_self, ENTITY, 40) is False
+
+
+class TestInitialTweak:
+    """Startup takes the two openings out of the device's own PID mode."""
+
+    @pytest.fixture
+    def default_tweak(self, monkeypatch):
+        """Neutralize the default tweak the quirk chains to."""
+        called = AsyncMock()
+        monkeypatch.setattr(trv_zbt, "default_initial_tweak", called)
+        return called
+
+    @pytest.mark.asyncio
+    async def test_a_direct_valve_trv_switches_the_pid_mode_off(
+        self, monkeypatch, default_tweak
+    ):
+        """The mode that keeps the openings from Better Thermostat does not stay on."""
+        mock_self = _make_self(
+            states={PID_SWITCH: STATE_ON}, advanced=DIRECT_VALVE_ADVANCED
+        )
+        monkeypatch.setattr(trv_zbt.er, "async_get", lambda hass: mock_self._registry)
+
+        await trv_zbt.initial_tweak(mock_self, ENTITY)
+
+        default_tweak.assert_awaited_once_with(mock_self, ENTITY)
+        assert _service_payloads(mock_self) == [
+            ("switch", "turn_off", {"entity_id": PID_SWITCH})
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_trv_on_another_calibration_leaves_the_pid_mode_alone(
+        self, monkeypatch, default_tweak
+    ):
+        """A TRV the device still regulates for keeps its own algorithm."""
+        mock_self = _make_self(states={PID_SWITCH: STATE_ON})
+        monkeypatch.setattr(trv_zbt.er, "async_get", lambda hass: mock_self._registry)
+
+        await trv_zbt.initial_tweak(mock_self, ENTITY)
+
+        default_tweak.assert_awaited_once_with(mock_self, ENTITY)
+        mock_self.hass.services.async_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_released_trv_keeps_its_pid_mode(self, monkeypatch, default_tweak):
+        """The device is the user's, so startup writes nothing to it."""
+        mock_self = _make_self(
+            states={PID_SWITCH: STATE_ON}, advanced=DIRECT_VALVE_ADVANCED
+        )
+        mock_self.devices_released = True
+        monkeypatch.setattr(trv_zbt.er, "async_get", lambda hass: mock_self._registry)
+
+        await trv_zbt.initial_tweak(mock_self, ENTITY)
+
+        mock_self.hass.services.async_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_pid_mode_already_off_sees_no_write(
+        self, monkeypatch, default_tweak
+    ):
+        """A device that already runs without its PID mode is left as it is."""
+        mock_self = _make_self(
+            states={PID_SWITCH: STATE_OFF}, advanced=DIRECT_VALVE_ADVANCED
+        )
+        monkeypatch.setattr(trv_zbt.er, "async_get", lambda hass: mock_self._registry)
+
+        await trv_zbt.initial_tweak(mock_self, ENTITY)
+
+        mock_self.hass.services.async_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_device_without_the_pid_switch_sees_no_write(
+        self, monkeypatch, default_tweak
+    ):
+        """A device that names no PID switch cannot be asked to change it."""
+        mock_self = _make_self(
+            entries=[
+                _entry(ENTITY),
+                _entry(HEATING_VALVE),
+                _entry(IDLE_VALVE),
+                _entry(SENSOR_SELECT),
+            ],
+            advanced=DIRECT_VALVE_ADVANCED,
+        )
+        monkeypatch.setattr(trv_zbt.er, "async_get", lambda hass: mock_self._registry)
+
+        await trv_zbt.initial_tweak(mock_self, ENTITY)
+
+        mock_self.hass.services.async_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_pid_switch_without_a_state_sees_no_write(
+        self, monkeypatch, default_tweak
+    ):
+        """A switch that reports no state is not assumed to be on."""
+        mock_self = _make_self(advanced=DIRECT_VALVE_ADVANCED)
+        monkeypatch.setattr(trv_zbt.er, "async_get", lambda hass: mock_self._registry)
+
+        await trv_zbt.initial_tweak(mock_self, ENTITY)
+
+        mock_self.hass.services.async_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_trv_the_registry_does_not_hold_sees_no_write(
+        self, monkeypatch, default_tweak
+    ):
+        """An unregistered TRV has no device to find the switch on."""
+        mock_self = _make_self(
+            entries=[_entry(PID_SWITCH)], advanced=DIRECT_VALVE_ADVANCED
+        )
+        monkeypatch.setattr(trv_zbt.er, "async_get", lambda hass: mock_self._registry)
+
+        await trv_zbt.initial_tweak(mock_self, ENTITY)
+
+        mock_self.hass.services.async_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_trv_without_a_device_sees_no_write(
+        self, monkeypatch, default_tweak
+    ):
+        """A registry entry without a device cannot be scanned for siblings."""
+        mock_self = _make_self(
+            entries=[make_registry_entry(ENTITY, device_id=None), _entry(PID_SWITCH)],
+            advanced=DIRECT_VALVE_ADVANCED,
+        )
+        monkeypatch.setattr(trv_zbt.er, "async_get", lambda hass: mock_self._registry)
+
+        await trv_zbt.initial_tweak(mock_self, ENTITY)
+
+        mock_self.hass.services.async_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_pid_write_is_named_and_startup_continues(
+        self, monkeypatch, default_tweak
+    ):
+        """A device that refuses the switch write does not fail startup."""
+        mock_self = _make_self(
+            states={PID_SWITCH: STATE_ON}, advanced=DIRECT_VALVE_ADVANCED
+        )
+        mock_self.hass.services.async_call = AsyncMock(
+            side_effect=HomeAssistantError("entity gone")
+        )
+        monkeypatch.setattr(trv_zbt.er, "async_get", lambda hass: mock_self._registry)
+
+        await trv_zbt.initial_tweak(mock_self, ENTITY)
+
+        mock_self.hass.services.async_call.assert_awaited_once()
